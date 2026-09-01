@@ -14,9 +14,11 @@ import datetime
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 
 
 def _run(command):
@@ -29,13 +31,52 @@ def _run(command):
         return None
 
 
-def main():
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--out", default=None, help="write baseline JSON to FILE")
-    args = ap.parse_args()
+def _hermes_version(output):
+    match = re.search(r"\bHermes Agent v([0-9]+(?:\.[0-9]+){1,3}(?:[-+][A-Za-z0-9.-]+)?)\b", output or "")
+    return match.group(1) if match else None
 
+
+def _profile_count(output):
+    count = 0
+    for line in (output or "").splitlines():
+        candidate = line.strip().lstrip("* ")
+        if re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", candidate):
+            count += 1
+    return count
+
+
+def _home_kind():
+    configured = os.environ.get("HERMES_HOME")
+    if not configured:
+        return "default"
+    default = Path.home() / ".hermes"
+    try:
+        return "default" if Path(configured).expanduser().resolve() == default.resolve() else "custom"
+    except OSError:
+        return "custom"
+
+
+def _disk_summary():
+    probe = Path(os.environ.get("HERMES_HOME") or Path.home())
+    while not probe.exists() and probe != probe.parent:
+        probe = probe.parent
+    try:
+        usage = shutil.disk_usage(probe)
+    except OSError:
+        return None
+    return {
+        "total_bytes": usage.total,
+        "used_bytes": usage.used,
+        "free_bytes": usage.free,
+    }
+
+
+def collect_baseline():
+    """Return useful machine classes and counts without emitting private values."""
     hermes_path = shutil.which("hermes")
-    baseline = {
+    version_output = _run(["hermes", "--version"]) if hermes_path else None
+    profiles_output = _run(["hermes", "profile", "list"]) if hermes_path else None
+    return {
         "collected_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "platform": {
             "system": platform.system(),
@@ -43,14 +84,22 @@ def main():
             "machine": platform.machine(),
             "python": platform.python_version(),
         },
-        "disk": _run(["df", "-h"]) if os.name != "nt" else None,
+        "disk": _disk_summary(),
         "hermes": {
             "on_path": hermes_path is not None,
-            "version": _run(["hermes", "--version"]) if hermes_path else None,
-            "home": os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes"),
-            "profiles": _run(["hermes", "profile", "list"]) if hermes_path else None,
+            "version": _hermes_version(version_output),
+            "home_kind": _home_kind(),
+            "profile_count": _profile_count(profiles_output),
         },
     }
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--out", default=None, help="write baseline JSON to FILE")
+    args = ap.parse_args()
+
+    baseline = collect_baseline()
 
     payload = json.dumps(baseline, indent=2)
     if args.out:
