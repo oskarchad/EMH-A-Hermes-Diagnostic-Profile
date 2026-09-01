@@ -124,6 +124,21 @@ def test_breakglass_output_redacts_private_paths_user_and_profile_details(tmp_pa
     assert isinstance(baseline["disk"]["total_bytes"], int)
     assert isinstance(baseline["disk"]["free_bytes"], int)
 
+    private_output = tmp_path / "private" / "alice" / "baseline.json"
+    private_output.parent.mkdir(parents=True)
+    file_result = subprocess.run(
+        [sys.executable, str(BREAKGLASS), "--out", str(private_output)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=env,
+        check=False,
+    )
+    assert file_result.returncode == 0, file_result.stderr
+    assert file_result.stdout.strip() == "baseline written"
+    assert str(private_output) not in file_result.stdout
+    assert json.loads(private_output.read_text(encoding="utf-8"))["hermes"] == baseline["hermes"]
+
 
 def _create_state_db(path: Path) -> None:
     with sqlite3.connect(path) as conn:

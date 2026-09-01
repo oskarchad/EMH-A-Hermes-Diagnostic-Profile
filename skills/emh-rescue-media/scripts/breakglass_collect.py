@@ -105,7 +105,7 @@ def main():
     if args.out:
         with open(args.out, "w", encoding="utf-8") as handle:
             handle.write(payload)
-        print("baseline written: " + args.out)
+        print("baseline written")
     else:
         print(payload)
     return 0
