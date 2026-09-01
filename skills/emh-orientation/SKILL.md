@@ -46,8 +46,8 @@ Follow the standard case structure — Complaint (the operator's goal, usually "
 1. **Inventory the operator's setup state (read-only, before any offer).**
    - Confirm the EMH profile is installed and identify its recorded source: `hermes profile info emh`.
    - Resolve the default store explicitly with `hermes profile show default`, record its `Path`, and confirm that exact path with the operator before registration. Do not assume an unqualified `hermes` subprocess escapes the current profile's inherited `HERMES_HOME`.
-   - List existing crons in that store: `HERMES_HOME="<default-profile-path>" hermes cron list`.
-   - Detect available delivery channels in that store: `HERMES_HOME="<default-profile-path>" hermes gateway status` and its `config.yaml` platform section. A channel present and enabled (for example Telegram) means a notified cron can deliver; absent channels mean `deliver: local` with an explicit warning.
+   - List existing crons in that store: `hermes -p default cron list`.
+   - Detect available delivery channels in that store: `hermes -p default gateway status` and its `config.yaml` platform section. A channel present and enabled (for example Telegram) means a notified cron can deliver; absent channels mean `deliver: local` with an explicit warning.
    - Check whether the recorded source has a remote: `git -C <recorded-source> remote -v`. No remote means the update-check cron cannot fetch and must not be registered.
 2. **Explain the nightly health cron.** Summarize what it checks (core health, session lifecycle, retention, memory, storage, cron fleet), when it runs (daily 03:00), what it reports (`All clear.` or `ATTENTION NEEDED`, max 10 bullets), and that it is read-only — it never repairs. State the delivery plan based on the detected channels.
 3. **Ask for consent to register the nightly health cron on the default profile.** Only the explicit, specific consent covers registration; do not proceed on a general "sure, set things up."
@@ -73,14 +73,14 @@ Follow the standard case structure — Complaint (the operator's goal, usually "
 
 ## Exact commands and tool calls
 
-Run only the smallest relevant subset. **Profile scoping is the critical detail: cron has no profile flag and follows `HERMES_HOME`. A subprocess launched by EMH inherits the EMH store unless the default store is set explicitly. Resolve the default path with `hermes profile show default`, confirm it with the operator, and set it on every inventory, registration, and verification command.**
+Run only the smallest relevant subset. **Profile scoping is the critical detail: the cron subcommand has no profile option and otherwise follows inherited `HERMES_HOME`. A subprocess launched by EMH inherits the EMH store unless the default store is selected explicitly. Resolve the default path with `hermes profile show default`, confirm it with the operator, and use Hermes' cross-platform global selector `hermes -p default` on every inventory, registration, and verification command.**
 
 ### Read-only allowlist
 
 - `hermes profile info emh`
 - `hermes profile show default`
-- `HERMES_HOME="<default-profile-path>" hermes cron list`
-- `HERMES_HOME="<default-profile-path>" hermes gateway status`
+- `hermes -p default cron list`
+- `hermes -p default gateway status`
 - `hermes --version`
 - `git -C "<recorded-source>" remote -v`
 - `git -C "<recorded-source>" ls-remote --heads origin` (update-check preflight; only when a remote exists)
@@ -88,10 +88,10 @@ Run only the smallest relevant subset. **Profile scoping is the critical detail:
 
 ### Approval-gated reproductions and mutations
 
-Registration is a mutation and requires the operator's explicit consent for that specific cron. The live `hermes cron create --help` contract is `schedule [prompt]`; both are positional and there is no `--prompt-file` or cron profile flag. Use the confirmed default store explicitly:
+Registration is a mutation and requires the operator's explicit consent for that specific cron. The live `hermes cron create --help` contract is `schedule [prompt]`; both are positional and there is no `--prompt-file` or cron-subcommand profile option. Use the confirmed default store through Hermes' global profile selector:
 
-- `HERMES_HOME="<default-profile-path from hermes profile show default>" hermes cron create "0 3 * * *" "<canonical-nightly-prompt>" --name emh-nightly-self-check --deliver "<approved-delivery-target>"` — the prompt is the self-contained six-domain contract from `emh-nightly-self-check`, including its bounded SQLite helper command and `Never repair.`
-- `HERMES_HOME="<default-profile-path from hermes profile show default>" hermes cron create "0 4 * * 1" "<canonical-update-check-prompt>" --name emh-repo-update-check --deliver "<approved-delivery-target>"` — the prompt is the read-only comparison contract (installed distribution version vs immutable upstream commit, CHANGELOG delta summary, `Never apply updates.`).
+- `hermes -p default cron create "0 3 * * *" "<canonical-nightly-prompt>" --name emh-nightly-self-check --deliver "<approved-delivery-target>"` — the prompt is the self-contained six-domain contract from `emh-nightly-self-check`, including its bounded SQLite helper command and `Never repair.`
+- `hermes -p default cron create "0 4 * * 1" "<canonical-update-check-prompt>" --name emh-repo-update-check --deliver "<approved-delivery-target>"` — the prompt is the read-only comparison contract (installed distribution version vs immutable upstream commit, CHANGELOG delta summary, `Never apply updates.`).
 - Delivery target: substitute the detected default-profile channel (for example `telegram`), or `local` with the explicit warning when no channel exists. Preserve the operator-approved value exactly and verify it in `jobs.json`/`hermes cron list` after creation.
 - Cron runs receive the normal static tool list; current `cron create` does not expose a toolset flag. Keep any model/provider choice operator-owned and verify `hermes cron create --help` immediately before use.
 
@@ -111,7 +111,7 @@ Before any mutating treatment, require the user's explicit approval, the exact t
 
 ## Common pitfalls and recovery
 
-1. **Registering into the wrong profile store.** A session running in the EMH profile passes its `HERMES_HOME` to subprocesses, so an unqualified cron command writes to EMH. Resolve and confirm the default path, set `HERMES_HOME` explicitly for the mutation, and verify with the same explicit value afterward.
+1. **Registering into the wrong profile store.** A session running in the EMH profile passes its `HERMES_HOME` to subprocesses, so an unqualified cron command writes to EMH. Resolve and confirm the default path, select it with `hermes -p default` for the mutation, and verify with the same selector afterward.
 2. **Delivering to a channel-less profile.** A job registered in a profile without channels silently produces no notification. Detect channels first; if none exist, register with `deliver: local` and say the operator must check the output directory.
 3. **Registering the update-check without a remote.** The check cannot fetch without a remote on the recorded source. Detect it first; do not register the job or promise updates.
 4. **Duplicate crons on re-run.** Orientation may run more than once. Check the existing inventory before offering; offer keep/skip/replace instead of duplicating.
@@ -122,7 +122,7 @@ Before any mutating treatment, require the user's explicit approval, the exact t
 
 - [ ] Setup state was inventoried read-only before any offer (profile, default cron store, channels, source remote).
 - [ ] Each integration was explained, then consent asked and recorded individually (including rescue media, when offered).
-- [ ] Registered jobs landed in the **default** store (verified with `HERMES_HOME="<confirmed-default-profile-path>" hermes cron list`).
+- [ ] Registered jobs landed in the **default** store (verified with `hermes -p default cron list` and matched to the confirmed default path).
 - [ ] Schedules and deliver targets match what was consented to; `deliver: local` cases carry an explicit warning.
 - [ ] Update-check was registered only when the recorded source has a remote.
 - [ ] Rescue media consent recorded; the build itself, when consented, was handed off to `emh-rescue-media` and not duplicated here.

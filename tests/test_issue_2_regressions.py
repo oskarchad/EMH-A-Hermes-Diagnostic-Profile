@@ -32,12 +32,12 @@ def load_script(path: Path, name: str):
 
 def _documented_cron_command(job_name: str) -> list[str]:
     orientation = ORIENTATION.read_text(encoding="utf-8")
-    documented_commands = re.findall(r"`([^`\n]*hermes cron create[^`\n]*)`", orientation)
+    documented_commands = re.findall(r"`([^`\n]*\bcron create\b[^`\n]*)`", orientation)
     assert documented_commands
     assert all("--prompt-file" not in command for command in documented_commands)
     line = next(
         line for line in orientation.splitlines()
-        if "hermes cron create" in line and f"--name {job_name}" in line
+        if "cron create" in line and f"--name {job_name}" in line
     )
     command = line.split("`", 2)[1]
     return shlex.split(command)
@@ -46,23 +46,20 @@ def _documented_cron_command(job_name: str) -> list[str]:
 def test_orientation_command_targets_explicit_store_and_preserves_delivery(tmp_path):
     parts = _documented_cron_command("emh-nightly-self-check")
     intended = tmp_path / "operator-default"
-    inherited = tmp_path / "profiles" / "emh"
+    inherited = intended / "profiles" / "emh"
     intended.mkdir()
     inherited.mkdir(parents=True)
 
-    assert parts[0].startswith("HERMES_HOME=")
-    assert "default-profile-path" in parts[0]
-    parts[0] = f"HERMES_HOME={intended}"
+    assert parts[:5] == ["hermes", "-p", "default", "cron", "create"]
     parts[parts.index("<canonical-nightly-prompt>")] = (
         "Run the bounded read-only nightly EMH health check. Never repair."
     )
     parts[parts.index("<approved-delivery-target>")] = "local"
-    parts[parts.index("hermes")] = shutil.which("hermes") or "hermes"
+    parts[0] = shutil.which("hermes") or "hermes"
 
     env = {**os.environ, "HERMES_HOME": str(inherited)}
-    env["HERMES_HOME"] = parts[0].split("=", 1)[1]
     result = subprocess.run(
-        parts[1:], capture_output=True, text=True, timeout=30, env=env, check=False
+        parts, capture_output=True, text=True, timeout=30, env=env, check=False
     )
     assert result.returncode == 0, result.stderr or result.stdout
 
@@ -84,7 +81,7 @@ def test_breakglass_output_redacts_private_paths_user_and_profile_details(tmp_pa
         "#!/bin/sh\n"
         "case \"$*\" in\n"
         "  \"--version\") printf 'Hermes Agent v9.9.9\\nInstall directory: /srv/private-mount/alice/hermes\\n' ;;\n"
-        "  \"profile list\") printf 'default\\nsecret-client-profile\\n' ;;\n"
+        "  \"profile list\") printf '\\n Profile          Model                        Gateway      Alias        Distribution\\n ───────────────    ───────────────────────────    ───────────    ───────────    ────────────────────\\n ◆default         private-model                stopped      —            —\\n  secret-client-profile private-model                stopped      secret-alias secret-dist@1.0.0\\n' ;;\n"
         "esac\n",
         encoding="utf-8",
     )
@@ -138,6 +135,81 @@ def test_breakglass_output_redacts_private_paths_user_and_profile_details(tmp_pa
     assert file_result.stdout.strip() == "baseline written"
     assert str(private_output) not in file_result.stdout
     assert json.loads(private_output.read_text(encoding="utf-8"))["hermes"] == baseline["hermes"]
+
+
+def test_breakglass_profile_count_is_unknown_for_missing_or_unrecognized_output():
+    breakglass = load_script(BREAKGLASS, "breakglass_profile_count")
+
+    assert breakglass._profile_count("default\nlegacy-profile") == 2
+    assert breakglass._profile_count(None) is None
+    assert breakglass._profile_count("unexpected profile-list diagnostic") is None
+
+
+def test_breakglass_profile_count_is_unknown_when_profile_command_fails(tmp_path):
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_hermes = fake_bin / "hermes"
+    fake_hermes.write_text(
+        "#!/bin/sh\n"
+        "case \"$*\" in\n"
+        "  \"--version\") printf 'Hermes Agent v9.9.9\\n' ;;\n"
+        "  \"profile list\") printf 'default\\n' >&2; exit 1 ;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    fake_hermes.chmod(0o755)
+    env = {
+        **os.environ,
+        "PATH": str(fake_bin) + os.pathsep + os.environ.get("PATH", ""),
+    }
+
+    result = subprocess.run(
+        [sys.executable, str(BREAKGLASS)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=env,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["hermes"]["profile_count"] is None
+
+
+def test_breakglass_counts_real_disposable_profile_list_without_leaking_details(tmp_path):
+    private_home = tmp_path / "private-alice-store"
+    private_home.mkdir()
+    env = {
+        **os.environ,
+        "HERMES_HOME": str(private_home),
+    }
+
+    profile_list = subprocess.run(
+        [shutil.which("hermes") or "hermes", "profile", "list"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=env,
+        check=False,
+    )
+    assert profile_list.returncode == 0, profile_list.stderr or profile_list.stdout
+    assert "default" in profile_list.stdout
+
+    result = subprocess.run(
+        [sys.executable, str(BREAKGLASS)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=env,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    baseline = json.loads(result.stdout)
+    serialized = json.dumps(baseline, sort_keys=True)
+
+    assert baseline["hermes"]["profile_count"] == 1
+    assert "default" not in serialized
+    assert str(private_home) not in serialized
+    assert "private-alice-store" not in serialized
 
 
 def _create_state_db(path: Path) -> None:

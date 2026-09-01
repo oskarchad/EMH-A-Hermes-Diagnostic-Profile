@@ -26,7 +26,9 @@ def _run(command):
         result = subprocess.run(
             command, capture_output=True, text=True, timeout=15
         )
-        return (result.stdout or result.stderr).strip() or None
+        if result.returncode != 0:
+            return None
+        return result.stdout.strip() or None
     except Exception:
         return None
 
@@ -37,12 +39,30 @@ def _hermes_version(output):
 
 
 def _profile_count(output):
-    count = 0
-    for line in (output or "").splitlines():
+    if not output:
+        return None
+
+    lines = output.splitlines()
+    for index, line in enumerate(lines):
+        if line.split() != ["Profile", "Model", "Gateway", "Alias", "Distribution"]:
+            continue
+        if index + 1 >= len(lines):
+            return None
+        separator = lines[index + 1].strip()
+        if not separator or set(separator) - {"─", " "}:
+            return None
+        rows = [row for row in lines[index + 2 :] if row.strip()]
+        if any(not re.search(r"\b(?:running|stopped)\b", row) for row in rows):
+            return None
+        return len(rows)
+
+    legacy_count = 0
+    for line in lines:
         candidate = line.strip().lstrip("* ")
-        if re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", candidate):
-            count += 1
-    return count
+        if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", candidate):
+            return None
+        legacy_count += 1
+    return legacy_count or None
 
 
 def _home_kind():
