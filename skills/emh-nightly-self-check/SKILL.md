@@ -39,11 +39,11 @@ Use when:
 Record findings in the standard case structure — Complaint (the anomaly as observed), Vitals (bounded read-only state), Differential diagnosis (competing explanations for a flagged anomaly), Confirmed diagnosis (only after reproduction or corroboration), Treatment (proposal only, never executed here), Post-treatment verification (the exact recheck to run after an approved repair), and Discharge summary or escalation packet (the redacted anomaly list routed to the owning domain).
 
 1. **Core health.** Run `PAGER=cat hermes status` and `PAGER=cat hermes doctor`. Distinguish genuine failures from optional unset integrations/API keys; label each claim exactly as **Observed**, **Reproduced**, **Confirmed in installed source**, **Officially documented**, **Known upstream fix**, or **Hypothesis**.
-2. **Session lifecycle.** Query the session store read-only (`$HERMES_HOME/state.db`); `sessions.ended_at IS NULL` means open. Group open sessions by source and age. Flag detached sessions only when stale: cli/api_server/tui/speech-bridge older than 24h; cron/subagent older than 6h. Do not flag long-lived telegram/discord/bluebubbles sessions merely for being open. If detached counts spike, group exact first user messages to identify a runaway producer instead of guessing.
+2. **Session lifecycle.** Run the bounded SQLite helper against the owning profile's `state.db`; it opens SQLite with URI `mode=ro`, enables `PRAGMA query_only`, groups `sessions.ended_at IS NULL` rows by source, and returns at most the requested limit. Flag detached sessions only when stale: cli/api_server/tui/speech-bridge older than 24h; cron/subagent older than 6h. Do not flag long-lived telegram/discord/bluebubbles sessions merely for being open. If detached counts spike, use a separate approved, bounded discriminator rather than emitting first-message content in the nightly report.
 3. **Retention health.** Confirm the configured retention prune script exists and passes a syntax check (`bash -n`). Inspect the latest completed block in the retention log. Flag a missing completion, nonzero failure, or no successful run within 30 hours. Do not run the cleanup.
 4. **Memory health.** Measure the built-in memory files (`$HERMES_HOME/memories/MEMORY.md`, `USER.md`) by bytes, non-whitespace characters, and `§` entry count. Run `hermes memory status`; flag a configured provider that is not installed or unavailable. If the Mnemosyne executable exists, run its read-only `stats` command only — never `sleep`, `dream`, or consolidation. Treat built-in and Mnemosyne as separate layers; report exactly which layer is unhealthy.
 5. **Storage signal.** Report the state database and WAL sizes plus filesystem free space. Flag WAL above 1 GB, free space below 10 GB, or state-db growth above 25% versus the prior nightly report when a prior value is available. Do not vacuum or delete backups.
-6. **Cron fleet health.** Do not infer job health from the aggregate count in `hermes status` or from `hermes doctor` alone. Read the job store and execution database directly and run `PAGER=cat hermes cron status`. For every enabled job, flag `last_status` values of `error` or `blocked_config`, and flag any nonempty `last_error`. Include job name, job ID, last run time, exact error class/root cause, and the recommended next step. Inspect each enabled job's latest execution attempt; flag a latest terminal state of `failed` or `unknown`, and repeated failures when the last two or more attempts failed. Flag enabled jobs whose `next_run_at` is more than 10 minutes overdue when no corresponding execution is currently `claimed` or `running`. Ignore historical errors on paused or disabled jobs. If a failed enabled job uses `deliver: local`, note that it has no proactive user notification route in the current setup.
+6. **Cron fleet health.** Do not infer job health from the aggregate count in `hermes status` or from `hermes doctor` alone. Read `jobs.json`, run the bounded SQLite helper against `cron/executions.db`, and run `PAGER=cat hermes cron status`. For every enabled job, flag `last_status` values of `error` or `blocked_config`, and flag any nonempty `last_error`. Include job name, job ID, last run time, a redacted error class/root-cause summary, and the recommended next step. The helper returns only each job's latest attempt and an error-present boolean; use bounded `hermes cron runs <job-id> --limit 2` output when a redacted error class is still needed. Flag a latest terminal state of `failed` or `unknown`, and repeated failures when the last two or more attempts failed. Flag enabled jobs whose `next_run_at` is more than 10 minutes overdue when no corresponding execution is currently `claimed` or `running`. Ignore historical errors on paused or disabled jobs. If a failed enabled job uses `deliver: local`, note that it has no proactive user notification route in the current setup.
 
 ## Decision tree
 
@@ -65,11 +65,11 @@ Run only the smallest relevant subset; output remains private until redacted.
 - `hermes memory status`
 - `PAGER=cat hermes cron status`
 - `~/.hermes/hermes-agent/venv/bin/mnemosyne stats` (read-only stats only; never sleep/dream/consolidation)
-- `read_file(path="$HERMES_HOME/state.db", ...)` (read-only SQLite queries only)
+- `python3 "<emh-skill-root>/emh-nightly-self-check/scripts/sqlite_health.py" --state-db "$HERMES_HOME/state.db" --executions-db "$HERMES_HOME/cron/executions.db" --limit 100` (fixed, bounded queries; SQLite URI `mode=ro` plus `PRAGMA query_only`; nonzero exit means unavailable/unhealthy evidence, never `All clear.`)
 - `read_file(path="$HERMES_HOME/memories/MEMORY.md", offset=1, limit=200)`
 - `read_file(path="$HERMES_HOME/memories/USER.md", offset=1, limit=200)`
 - `read_file(path="$HERMES_HOME/cron/jobs.json", offset=1, limit=2000)`
-- `read_file(path="$HERMES_HOME/cron/executions.db", ...)` (read-only queries only)
+- `PAGER=cat hermes cron runs <job-id> --limit 2` (only for jobs the bounded helper flags; redact error details before reporting)
 - `read_file(path="$HERMES_HOME/logs/session-retention-prune.log", offset=1, limit=200)`
 
 ### Approval-gated reproductions and mutations
@@ -96,6 +96,7 @@ Before any mutating treatment, require the user's explicit approval, the exact t
 4. **Running consolidation during a health check.** Never run memory sleep/dream/consolidation or any prune; the sweep reports, the operator repairs under approval.
 5. **Cron health inferred from aggregate counts.** Read jobs.json, executions.db, and `hermes cron status` directly; a job can be enabled, erroring, and invisible in a summary count.
 6. **Repair implied by report.** `ATTENTION NEEDED` is a classification, not authorization; every repair returns to the explicit approval/backup/rollback gate.
+7. **Binary database passed to `read_file`.** `read_file` does not execute SQL. Run `sqlite_health.py`; a missing database, schema mismatch, timeout, or query error fails closed as `ATTENTION NEEDED` evidence and never creates a database.
 
 ## Verification checklist
 
